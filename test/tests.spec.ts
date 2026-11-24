@@ -19,7 +19,7 @@ import { expect } from "chai";
 import * as assert from "assert";
 import { FAKE_CERT, TEST_CERT } from "./types";
 import { assertRequired, signXmlResponse } from "../src/utility";
-import { getVerifiedXml, parseDomFromString, validateSignature } from "../src/xml";
+import { getVerifiedXml, parseDomFromString, signXml, validateSignature } from "../src/xml";
 import { generateServiceProviderMetadata } from "../src/metadata";
 
 const BAD_TEST_CERT =
@@ -3680,6 +3680,49 @@ describe("node-saml /", function () {
       await assert.rejects(samlObj.validatePostRequestAsync(body), {
         message: "SAML assertion expired: clocks skewed too much",
       });
+    });
+
+    const signLogoutRequest = (logoutRequestXml: string): string =>
+      signXml(
+        logoutRequestXml,
+        "//*[local-name(.)='LogoutRequest']",
+        { reference: "//*[local-name(.)='LogoutRequest']", action: "prepend" },
+        { privateKey: signingKey, signatureAlgorithm: "sha256", digestAlgorithm: "sha256" },
+      );
+
+    const logoutRequest = (attributes: string): string => {
+      const xml =
+        '<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ' +
+        'xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_logout" Version="2.0" ' +
+        `IssueInstant="${new Date().toISOString()}" ${attributes}>` +
+        "<saml:Issuer>onesaml_login</saml:Issuer>" +
+        '<saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:transient">user</saml:NameID>' +
+        "<samlp:SessionIndex>_session</samlp:SessionIndex></samlp:LogoutRequest>";
+      return Buffer.from(signLogoutRequest(xml)).toString("base64");
+    };
+
+    it("rejects a present-but-empty NotOnOrAfter rather than treating it as absent", async () => {
+      const body = { SAMLRequest: logoutRequest('NotOnOrAfter=""') };
+      await assert.rejects(samlObj.validatePostRequestAsync(body), {
+        message: "Error parsing NotOnOrAfter: '' is not a valid date",
+      });
+    });
+
+    it("rejects a present-but-empty NotBefore rather than treating it as absent", async () => {
+      const body = {
+        SAMLRequest: logoutRequest(
+          `NotBefore="" NotOnOrAfter="${new Date(Date.now() + 300000).toISOString()}"`,
+        ),
+      };
+      await assert.rejects(samlObj.validatePostRequestAsync(body), {
+        message: "Error parsing NotBefore: '' is not a valid date",
+      });
+    });
+
+    it("accepts a LogoutRequest that simply omits the optional time fields", async () => {
+      const body = { SAMLRequest: logoutRequest("") };
+      const { profile } = await samlObj.validatePostRequestAsync(body);
+      expect(profile.ID).to.equal("_logout");
     });
 
     it("returns profile for valid signature", async () => {

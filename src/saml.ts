@@ -2012,12 +2012,15 @@ class SAML {
   ): Error | null {
     if (this.options.acceptedClockSkewMs == -1) return null;
 
-    if (notBefore) {
+    // A null/undefined attribute means the field is absent and the profile permits omitting it;
+    // an empty string is a field that is present but unparseable, which dateStringToTimestamp
+    // rejects rather than silently treating as no constraint.
+    if (notBefore != null) {
       const notBeforeMs = dateStringToTimestamp(notBefore, "NotBefore");
       if (nowMs + this.options.acceptedClockSkewMs < notBeforeMs)
         return new Error("SAML assertion not yet valid");
     }
-    if (notOnOrAfter) {
+    if (notOnOrAfter != null) {
       const notOnOrAfterMs = dateStringToTimestamp(notOnOrAfter, "NotOnOrAfter");
       if (nowMs - this.options.acceptedClockSkewMs >= notOnOrAfterMs)
         return new Error("SAML assertion expired: clocks skewed too much");
