@@ -220,18 +220,18 @@ such a response is rejected for the missing signature before its status is read.
 assertion keyed by its `Name`. What is populated depends on the message, so check for the fields you
 rely on rather than assuming they are all present.
 
-| Field                              | Description                                                                                                      |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `issuer`                           | The assertion's `Issuer`.                                                                                        |
-| `nameID`, `nameIDFormat`           | The subject's name identifier and its format.                                                                    |
-| `nameQualifier`, `spNameQualifier` | Name qualifiers, when the assertion carries them.                                                                |
-| `sessionIndex`                     | The `AuthnStatement`'s `SessionIndex`; you need it to build a logout request.                                    |
-| `inResponseTo`                     | The `InResponseTo` a signature covers: the `Response`'s if signed, else the `SubjectConfirmationData`'s.         |
-| `mail`, `email`                    | Convenience aliases. `mail` falls back to `urn:oid:0.9.2342.19200300.100.1.3`, and `email` falls back to `mail`. |
-| `attributes`                       | Every attribute as a `Name` → value map. Single-valued attributes are strings; repeated ones are arrays.         |
-| `getAssertionXml()`                | The assertion XML **that the signature covers**. This is the trustworthy copy.                                   |
-| `getAssertion()`                   | The same assertion, parsed into a JavaScript object.                                                             |
-| `getSamlResponseXml()`             | **Deprecated.** The response XML as received, **not as verified**. See the warning below.                        |
+| Field                              | Description                                                                                                       |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `issuer`                           | The assertion's `Issuer`.                                                                                         |
+| `nameID`, `nameIDFormat`           | The subject's name identifier and its format.                                                                     |
+| `nameQualifier`, `spNameQualifier` | Name qualifiers, when the assertion carries them.                                                                 |
+| `sessionIndex`                     | The `AuthnStatement`'s `SessionIndex`; you need it to build a logout request.                                     |
+| `inResponseTo`                     | The verified `InResponseTo`: a `SubjectConfirmationData` value when present, otherwise a signed `Response` value. |
+| `mail`, `email`                    | Convenience aliases. `mail` falls back to `urn:oid:0.9.2342.19200300.100.1.3`, and `email` falls back to `mail`.  |
+| `attributes`                       | Every attribute as a `Name` → value map. Single-valued attributes are strings; repeated ones are arrays.          |
+| `getAssertionXml()`                | The assertion XML **that the signature covers**. This is the trustworthy copy.                                    |
+| `getAssertion()`                   | The same assertion, parsed into a JavaScript object.                                                              |
+| `getSamlResponseXml()`             | **Deprecated.** The response XML as received, **not as verified**. See the warning below.                         |
 
 Attributes are also copied onto `profile` at the top level for convenience, but an attribute never
 overwrites a field the library set itself.
@@ -533,9 +533,10 @@ scoping: {
 >   the built-in one does, two copies arriving at the same moment cannot both be accepted either. It
 >   rejects IdP-initiated logins, and on more than one server or process it needs a shared
 >   [cache provider](#cache-provider).
-> - `"ifPresent"` validates `InResponseTo` when a response carries one and accepts a response that
->   does not. IdP-initiated login keeps working, and an unsolicited response is accepted and can be
->   replayed until its timestamps expire, unless you set
+> - `"ifPresent"` validates a signed `InResponseTo` when either the `Response` or the assertion's
+>   bearer `SubjectConfirmationData` carries one, and accepts a response that carries neither.
+>   IdP-initiated login keeps working only when it supplies no signed `InResponseTo`; a truly
+>   unsolicited response is accepted and can be replayed until its timestamps expire, unless you set
 >   [`rejectReplayedAssertions`](#replayed-assertions).
 > - `"never"` skips the check, so any captured response can be replayed until its timestamps expire,
 >   unless you set [`rejectReplayedAssertions`](#replayed-assertions).
@@ -1035,19 +1036,20 @@ request ID, so presenting the same response again later fails. Two copies arrivi
 moment can both be accepted unless the cache provider removes the ID atomically, which the built-in
 one does and a custom one does if it implements `consumeAsync`, described below.
 
-While `InResponseTo` is validated — always under `"always"`, and under `"ifPresent"` when the
-`Response` or `LogoutResponse` element carries one — a request ID is removed when a verified
-signature covers an `InResponseTo` naming it, on that element or on a `SubjectConfirmationData` in
-the assertion, whether the response is then accepted or rejected. The exception is a copy rejected
-as a [replayed assertion](#replayed-assertions), which leaves the ID to the first copy, since that
-copy may still be validating. Nothing else removes one. Anyone
-who learns a pending request ID can put it in a response, so an unsigned `InResponseTo` is still
-checked against the recorded IDs but cannot by itself retire one, and the IdP's genuine response
-validates after it. That covers a rejected response in which nothing signed names the request, an
-unsigned `Response` accepted under `"ifPresent"` on the strength of its assertion alone, and an
-unsigned Redirect-binding `LogoutResponse`. None of these can be presented again with more effect
-than before: an unsigned `InResponseTo` can be deleted, making the response unsolicited, and an
-unsigned logout message can be forged outright.
+While `InResponseTo` is validated — always under `"always"`, and under `"ifPresent"` when a
+`Response`, `LogoutResponse`, or verified `SubjectConfirmationData` carries one — a request ID is
+removed when a verified signature covers the `InResponseTo` naming it, whether the response is then
+accepted or rejected. The SAML assertion's `SubjectConfirmationData` value is the authoritative one;
+the `Response` value is consumed only when no verified assertion value is available and the
+`Response` signature covers it. The exception is a copy rejected as a
+[replayed assertion](#replayed-assertions), which leaves the ID to the first copy, since that copy
+may still be validating. Nothing else removes one. Anyone who learns a pending request ID can put it
+in a response, so an unsigned `Response` `InResponseTo` is still checked against the recorded IDs
+for consistency but cannot by itself retire one, and the IdP's genuine response validates after it.
+That covers a rejected response in which nothing signed names the request, an unsigned `Response`
+whose assertion also carries no `InResponseTo`, and an unsigned Redirect-binding `LogoutResponse`.
+An unsigned `Response` attribute can be deleted, but doing so no longer hides a request named by a
+signed assertion confirmation; an unsigned logout message can still be forged outright.
 
 A signature shows that the IdP answered a request, not that whoever presents the response started
 it. Someone with an account at your IdP who gets it to answer a request carrying another user's
@@ -1058,10 +1060,11 @@ pending ID receives a genuinely signed response, and presenting it retires that 
 
 ## Replayed assertions
 
-`InResponseTo` validation cannot stop an unsolicited response from being presented twice: it carries
-no `InResponseTo`, and an unsigned one can be deleted. Set `rejectReplayedAssertions: true` to have
-Node-SAML remember the ID of each assertion it receives, in the [cache provider](#cache-provider),
-and reject one whose ID it has seen
+`InResponseTo` validation cannot stop a truly unsolicited response from being presented twice: it
+carries no signed `InResponseTo`. Deleting an unsigned `Response` attribute does not make a
+solicited assertion unsolicited when its signed `SubjectConfirmationData` still names the request.
+Set `rejectReplayedAssertions: true` to have Node-SAML remember the ID of each assertion it receives,
+in the [cache provider](#cache-provider), and reject one whose ID it has seen
 ([SAML profiles §4.1.4.5](https://docs.oasis-open.org/security/saml/v2.0/saml-profiles-2.0-os.pdf)).
 The second copy fails with `The assertion <ID> has already been received`. It gives IdP-initiated
 login, under `"ifPresent"` or `"never"`, the replay protection that `InResponseTo` gives a login

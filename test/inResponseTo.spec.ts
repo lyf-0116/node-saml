@@ -323,6 +323,21 @@ describe("InResponseTo request ID consumption", function () {
       expect(await outcome(saml.validatePostResponseAsync(loginResponse()))).to.equal("accepted");
     });
 
+    it("checks a later InResponseTo-bearing confirmation even when the Response is signed", async () => {
+      const mixed = loginResponse({
+        signResponse: true,
+        subjectInResponseTo: "_request_the_sender_started",
+        subjectConfirmations: [{ inResponseTo: false }, { inResponseTo: true }],
+      });
+
+      expect(await outcome(saml.validatePostResponseAsync(mixed))).to.equal(
+        "InResponseTo does not match subjectInResponseTo",
+      );
+      expect(
+        await outcome(saml.validatePostResponseAsync(loginResponse({ signResponse: true }))),
+      ).to.equal("InResponseTo is not valid");
+    });
+
     it("retires the request when a signed Response answering it fails", async () => {
       const expired = loginResponse({
         subjectConfirmations: [{ inResponseTo: false, expired: true }],
@@ -365,7 +380,7 @@ describe("InResponseTo request ID consumption", function () {
       );
     });
 
-    it("leaves an assertion-level request pending under ifPresent when the Response has no InResponseTo and validation fails", async () => {
+    it("retires an assertion-level request under ifPresent when the Response has no InResponseTo and validation fails", async () => {
       saml = newSaml({ validateInResponseTo: ValidateInResponseTo.ifPresent });
       await saml.getAuthorizeUrlAsync("", {});
       const expired = loginResponse({
@@ -376,7 +391,32 @@ describe("InResponseTo request ID consumption", function () {
       expect(await outcome(saml.validatePostResponseAsync(expired))).to.equal(
         "No valid subject confirmation found among those available in the SAML assertion",
       );
-      expect(await outcome(saml.validatePostResponseAsync(loginResponse()))).to.equal("accepted");
+      expect(await outcome(saml.validatePostResponseAsync(loginResponse()))).to.equal(
+        "InResponseTo is not valid",
+      );
+    });
+
+    it("rejects a replay whose unsigned wrapper deletes the Response InResponseTo under ifPresent", async () => {
+      saml = newSaml({ validateInResponseTo: ValidateInResponseTo.ifPresent });
+      await saml.getAuthorizeUrlAsync("", {});
+      const signedWrapper = loginResponse();
+      const wrapperWithoutResponseInResponseTo = loginResponse({
+        responseInResponseTo: null,
+      });
+
+      expect(await outcome(saml.validatePostResponseAsync(signedWrapper))).to.equal("accepted");
+      expect(
+        await outcome(saml.validatePostResponseAsync(wrapperWithoutResponseInResponseTo)),
+      ).to.equal("SubjectInResponseTo is not valid");
+    });
+
+    it("uses the assertion's InResponseTo under always when the Response omits it", async () => {
+      saml = newSaml();
+      await saml.getAuthorizeUrlAsync("", {});
+      const response = loginResponse({ responseInResponseTo: null });
+
+      expect(await outcome(saml.validatePostResponseAsync(response))).to.equal("accepted");
+      expect(await saml.cacheProvider.getAsync(requestId)).to.equal(null);
     });
 
     it("leaves the request pending when an unsigned Response names it under ifPresent", async () => {

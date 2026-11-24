@@ -2956,6 +2956,9 @@ describe("node-saml /", function () {
                 now: Date.parse("2014-05-28T00:13:09Z"),
                 toFake: ["Date"],
               });
+              if (validateInResponseTo === ValidateInResponseTo.ifPresent) {
+                await samlObj.cacheProvider.saveAsync(requestId, new Date().toISOString());
+              }
               const { profile } = await samlObj.validatePostResponseAsync(container);
               assertRequired(profile, "profile must exist");
               expect(profile.nameID.startsWith("ploer")).to.be.true;

@@ -129,11 +129,19 @@ async function consumeInResponseToAsync(
 // response as unsolicited instead.
 function assertResponseInResponseToCanAnswer(
   validateInResponseTo: ValidateInResponseTo,
-  inResponseToIsVerified: boolean,
+  inResponseTo: string | null,
+  responseInResponseToIsVerified: boolean,
 ): void {
-  if (!inResponseToIsVerified && validateInResponseTo === ValidateInResponseTo.always) {
+  if (validateInResponseTo !== ValidateInResponseTo.always) {
+    return;
+  }
+  if (inResponseTo != null && inResponseTo !== "" && responseInResponseToIsVerified) {
+    return;
+  }
+  if (inResponseTo != null && inResponseTo !== "") {
     throw new Error("SubjectInResponseTo is missing and the Response's InResponseTo is not signed");
   }
+  throw new Error("InResponseTo is missing from response");
 }
 
 function getRootAttribute(dom: Document, name: string): string | null {
@@ -1209,7 +1217,7 @@ class SAML {
     let inResponseTo: string | null = null;
     let verifiedInResponseTo: string | null = null;
     let verifiedDestination: string | null = null;
-    let verifiedAssertionXml: string | null = null;
+    let verifiedAssertionInResponseTos: string[] = [];
 
     try {
       xml = Buffer.from(container.SAMLResponse, "base64").toString("utf8");
@@ -1223,7 +1231,21 @@ class SAML {
       if (inResponseToNodes) {
         inResponseTo = inResponseToNodes.length ? inResponseToNodes[0].nodeValue : null;
 
-        await this.validateInResponseTo(inResponseTo);
+        const assertionInResponseToNodes = xpath.selectAttributes(
+          doc,
+          "/*[local-name()='Response']/*[local-name()='Assertion']/*[local-name()='Subject']/*[local-name()='SubjectConfirmation']/*[local-name()='SubjectConfirmationData']/@InResponseTo",
+        );
+        const encryptedAssertions = xpath.selectElements(
+          doc,
+          "/*[local-name()='Response']/*[local-name()='EncryptedAssertion']",
+        );
+        // Under "always" an assertion's signed SubjectConfirmationData can supply the ID, so the
+        // absent Response attribute is rejected only after the assertion's signature is verified.
+        if (inResponseTo != null) {
+          await this.validateInResponseTo(inResponseTo);
+        } else if (assertionInResponseToNodes.length === 0 && encryptedAssertions.length === 0) {
+          await this.validateInResponseTo(null);
+        }
       }
       const pemFiles = await this.getKeyInfosAsPem();
       // Check if this document has a valid top-level signature which applies to the entire XML document
@@ -1320,7 +1342,7 @@ class SAML {
         if (signedAssertion == null) {
           throw new Error("Cannot obtain assertion from signed data");
         }
-        verifiedAssertionXml = signedAssertion;
+        verifiedAssertionInResponseTos = await getSubjectInResponseTosAsync(signedAssertion);
         if (this.options.rejectReplayedAssertions) {
           await recordAssertionAsync(signedAssertion, this.options);
         }
@@ -1331,14 +1353,26 @@ class SAML {
           responseVerifiedXml != null,
         );
         // Consumed here, not in the overridable method, whose inResponseToIsVerified an override
-        // written before that parameter drops. Unless the Response is signed, only the assertion
-        // can name the request it answers.
-        if (this.mustValidateInResponseTo(Boolean(inResponseTo))) {
-          const answeredRequestId = responseVerifiedXml
-            ? verifiedInResponseTo
-            : (await getSubjectInResponseTosAsync(signedAssertion)).find(
-                (subjectInResponseTo) => subjectInResponseTo === inResponseTo,
-              );
+        // written before that parameter drops. Prefer the verified assertion's authoritative value;
+        // a verified Response attribute is only the fallback.
+        if (
+          this.mustValidateInResponseTo(
+            Boolean(inResponseTo) || verifiedAssertionInResponseTos.length > 0,
+          )
+        ) {
+          const profileInResponseTo = result.profile.inResponseTo;
+          const selectedAssertionInResponseTo =
+            typeof profileInResponseTo === "string"
+              ? verifiedAssertionInResponseTos.find(
+                  (subjectInResponseTo) => subjectInResponseTo === profileInResponseTo,
+                )
+              : undefined;
+          const answeredRequestId =
+            selectedAssertionInResponseTo ??
+            verifiedAssertionInResponseTos.find(
+              (subjectInResponseTo) => subjectInResponseTo === inResponseTo,
+            ) ??
+            (responseVerifiedXml ? verifiedInResponseTo : null);
           await consumeInResponseToAsync(this.cacheProvider, answeredRequestId ?? null);
         }
         // An unsigned Response's Destination is not verified, so it is not read.
@@ -1437,18 +1471,14 @@ class SAML {
       // An unsigned one proves nothing about the request it names, so that request stays pending.
       // Gated as success is, so under "ifPresent" a failure retires nothing a success would keep.
       // A replay leaves its requests to the first copy, which may still be validating.
+      const answeredRequestIds = new Set(verifiedAssertionInResponseTos);
+      if (verifiedInResponseTo != null) {
+        answeredRequestIds.add(verifiedInResponseTo);
+      }
       if (
         !(err instanceof ReplayedAssertionError) &&
-        this.mustValidateInResponseTo(Boolean(inResponseTo))
+        this.mustValidateInResponseTo(Boolean(inResponseTo) || answeredRequestIds.size > 0)
       ) {
-        const answeredRequestIds = new Set(
-          verifiedAssertionXml == null
-            ? []
-            : await getSubjectInResponseTosAsync(verifiedAssertionXml),
-        );
-        if (verifiedInResponseTo != null) {
-          answeredRequestIds.add(verifiedInResponseTo);
-        }
         for (const requestId of answeredRequestIds) {
           await this.cacheProvider.removeAsync(requestId);
         }
@@ -1778,13 +1808,11 @@ class SAML {
 
           return false;
         };
-        // Without a signed Response, only a SubjectConfirmationData can tie the assertion to a
-        // request, and verifying any one confirmation is enough (SAML Core §2.4.1).
-        if (!inResponseToIsVerified) {
-          subjectConfirmation = subjectConfirmations?.find(
-            (sc) => sc.SubjectConfirmationData?.[0].$?.InResponseTo != null && isTimely(sc),
-          );
-        }
+        // The assertion's SubjectConfirmationData is authoritative, so prefer a timely one that
+        // names a request whether or not the Response is signed (SAML Core §2.4.1).
+        subjectConfirmation = subjectConfirmations?.find(
+          (sc) => sc.SubjectConfirmationData?.[0].$?.InResponseTo != null && isTimely(sc),
+        );
         subjectConfirmation ??= subjectConfirmations?.find(isTimely);
         // For the warning only, which must not change the outcome: selection above stops at the
         // first match, so a later confirmation's timestamps may be malformed and throw here.
@@ -1818,9 +1846,9 @@ class SAML {
         );
       }
 
-      const verifiedInResponseTo = inResponseToIsVerified
-        ? inResponseTo
-        : confirmData?.$?.InResponseTo;
+      const subjectInResponseToForProfile = confirmData?.$?.InResponseTo;
+      const verifiedInResponseTo =
+        subjectInResponseToForProfile ?? (inResponseToIsVerified ? inResponseTo : undefined);
       if (verifiedInResponseTo != null) {
         profile.inResponseTo = verifiedInResponseTo;
       }
@@ -1829,11 +1857,10 @@ class SAML {
        * Test to see that if we have a SubjectConfirmation InResponseTo that it matches
        * the 'InResponseTo' attribute set in the Response
        */
-      if (this.mustValidateInResponseTo(Boolean(inResponseTo))) {
+      const subjectInResponseTo = confirmData?.$?.InResponseTo;
+      if (this.mustValidateInResponseTo(Boolean(inResponseTo) || subjectInResponseTo != null)) {
         if (subjectConfirmation) {
           if (confirmData?.$) {
-            const subjectInResponseTo = confirmData.$.InResponseTo;
-
             if (inResponseTo && subjectInResponseTo && subjectInResponseTo != inResponseTo) {
               throw new Error("InResponseTo does not match subjectInResponseTo");
             } else if (subjectInResponseTo) {
@@ -1852,12 +1879,14 @@ class SAML {
           }
           assertResponseInResponseToCanAnswer(
             this.options.validateInResponseTo,
+            inResponseTo,
             inResponseToIsVerified,
           );
           break getInResponseTo;
         } else {
           assertResponseInResponseToCanAnswer(
             this.options.validateInResponseTo,
+            inResponseTo,
             inResponseToIsVerified,
           );
           break getInResponseTo;
