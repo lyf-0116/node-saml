@@ -456,7 +456,7 @@ export const generateServiceProviderMetadata = (
       algorithms.warnAlgorithmNotSet("digestAlgorithm");
     }
     for (const option of ["signatureAlgorithm", "digestAlgorithm"] as const) {
-      algorithms.warnIfAlgorithmNotRecognized(option, params[option]);
+      algorithms.assertAlgorithmRecognized(option, params[option]);
     }
   }
   warnIfContactOrOrganizationInvalid(params);

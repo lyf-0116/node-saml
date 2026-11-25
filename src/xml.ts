@@ -365,6 +365,8 @@ export const signXml = (
   if (!location) throw new Error("location is required");
   if (!options) throw new Error("options is required");
   if (!isValidSamlSigningOptions(options)) throw new Error("options.privateKey is required");
+  algorithms.assertAlgorithmRecognized("signatureAlgorithm", options.signatureAlgorithm);
+  algorithms.assertAlgorithmRecognized("digestAlgorithm", options.digestAlgorithm);
 
   const transforms = options.xmlSignatureTransforms ?? defaultTransforms;
   const sig = new xmlCrypto.SignedXml();

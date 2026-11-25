@@ -421,8 +421,9 @@ It accepts `issuer` and `callbackUrl` plus the metadata-relevant options from th
 Called directly, it signs the metadata when `signMetadata` is `true` and `privateKey` is set. Choose
 both algorithms when it does: `signatureAlgorithm` has no default here, so omitting it is an error,
 while an omitted `digestAlgorithm` selects `sha1`, or is an error too when `signatureAlgorithm` is
-`"sha256-mgf1"`. The note under [`signatureAlgorithm`](#configuration-option-signaturealgorithm)
-applies to this function too, and it logs the same warnings under `NODE_DEBUG=node-saml`.
+`"sha256-mgf1"`. A value for either option that is not one of the names below is a `TypeError`,
+whether the options go to `SAML` or straight to this function. The note under
+[`signatureAlgorithm`](#configuration-option-signaturealgorithm) applies here too.
 
 ## Config parameter details
 
@@ -805,15 +806,15 @@ pair that with `digestAlgorithm: "sha256"`.
 
 > **Set both explicitly if you sign, and check the spelling.** With `privateKey` set, leaving
 > `signatureAlgorithm` or `digestAlgorithm` unset selects `sha1`, which is no longer considered safe
-> for signatures; the next major version requires both whenever `privateKey` is set. A value that is
-> not one of those listed above — including a casing difference such as `"SHA256"` — is not an error
-> today either: it falls through to SHA-1, so a typo silently downgrades the signature you asked
-> for. The next major version rejects it instead. `digestAlgorithm` is typed as a plain string, so
-> TypeScript does not catch a typo in it. Run with `NODE_DEBUG=node-saml` to be told when any of
-> this happens, whether the options go to `SAML` or straight to `generateServiceProviderMetadata`.
+> for signatures; the next major version requires both whenever `privateKey` is set, and today that
+> choice is announced under `NODE_DEBUG=node-saml`. A value that is not one of those listed above —
+> including a casing difference such as `"SHA256"` — is a `TypeError` naming the option, rather than
+> falling through to SHA-1: a misspelling must never silently downgrade the signature you asked for.
+> `digestAlgorithm` is typed as a plain string, so TypeScript does not catch a typo in it; the
+> runtime check does, whether the options go to `SAML` or straight to `generateServiceProviderMetadata`.
 >
 > The exception is `signatureAlgorithm: "sha256-mgf1"`: with it, a `digestAlgorithm` that is unset
-> or not one of those listed is already an error.
+> or not one of those listed is an error as well.
 
 ### Configuration option `privateKey`
 

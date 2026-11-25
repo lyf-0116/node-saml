@@ -17,14 +17,29 @@ export function findSignatureAlgorithm(identifier: string): SignatureAlgorithm |
 }
 
 // The short names the switches below recognize. Anything else falls through to SHA-1, so every
-// caller that signs warns against these lists rather than let a typo downgrade signing silently.
+// caller that signs validates against these lists rather than let a typo downgrade signing silently.
 const SUPPORTED_ALGORITHMS: Record<AlgorithmOption, string[]> = {
   signatureAlgorithm: ["sha1", "sha256", "sha256-mgf1", "sha512"],
   digestAlgorithm: ["sha1", "sha256", "sha512"],
 };
 
-// The values that came before "sha256-mgf1" get a SHA-1 digest when `digestAlgorithm` is omitted or
-// misspelled, and rejecting that is breaking for them. This one has no caller to break.
+// An omitted value still selects SHA-1 and only warns; a value the caller explicitly spelled but
+// which is not recognized is rejected in every combination, because the switch fallback would
+// otherwise silently downgrade the strength they asked for.
+export function assertAlgorithmRecognized(
+  option: AlgorithmOption,
+  value: string | undefined,
+): void {
+  if (value !== undefined && !SUPPORTED_ALGORITHMS[option].includes(value)) {
+    throw new TypeError(
+      `${option} "${value}" is not recognized; use one of ${SUPPORTED_ALGORITHMS[option].join(", ")}`,
+    );
+  }
+}
+
+// The values that came before "sha256-mgf1" get a SHA-1 digest when `digestAlgorithm` is omitted,
+// and rejecting that is breaking for them. This one has no caller to break, so an omitted digest is
+// an error here rather than a warning.
 export function assertDigestAlgorithmChosen(
   signatureAlgorithm: string | undefined,
   digestAlgorithm: string | undefined,
@@ -35,11 +50,7 @@ export function assertDigestAlgorithmChosen(
   if (digestAlgorithm == null) {
     throw new TypeError('digestAlgorithm is required when signatureAlgorithm is "sha256-mgf1"');
   }
-  if (!SUPPORTED_ALGORITHMS.digestAlgorithm.includes(digestAlgorithm)) {
-    throw new TypeError(
-      `digestAlgorithm "${digestAlgorithm}" is not recognized; use one of ${SUPPORTED_ALGORITHMS.digestAlgorithm.join(", ")}`,
-    );
-  }
+  assertAlgorithmRecognized("digestAlgorithm", digestAlgorithm);
 }
 
 export function warnAlgorithmNotSet(option: AlgorithmOption): void {
@@ -47,22 +58,6 @@ export function warnAlgorithmNotSet(option: AlgorithmOption): void {
     "`%s` is not set, so it defaults to `sha1`, which is no longer considered safe for signatures. The next major version requires it whenever `privateKey` is set; set it now.",
     option,
   );
-}
-
-// An unrecognized value is not an error today: it falls through to SHA-1, so a casing slip
-// like "SHA256" silently downgrades the signature the caller asked for.
-export function warnIfAlgorithmNotRecognized(
-  option: AlgorithmOption,
-  value: string | undefined,
-): void {
-  if (value !== undefined && !SUPPORTED_ALGORITHMS[option].includes(value)) {
-    debugLog(
-      '`%s` is set to "%s", which is not recognized, so SHA-1 is used instead. Use one of %s. The next major version rejects an unrecognized value rather than downgrading.',
-      option,
-      value,
-      SUPPORTED_ALGORITHMS[option].join(", "),
-    );
-  }
 }
 
 export function getSigningAlgorithm(shortName?: string): string {

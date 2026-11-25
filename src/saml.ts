@@ -598,7 +598,7 @@ class SAML {
     }
 
     for (const option of ["signatureAlgorithm", "digestAlgorithm"] as const) {
-      algorithms.warnIfAlgorithmNotRecognized(option, ctorOptions[option]);
+      algorithms.assertAlgorithmRecognized(option, ctorOptions[option]);
     }
 
     warnIfContactOrOrganizationInvalid(ctorOptions);

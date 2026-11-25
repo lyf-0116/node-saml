@@ -25,10 +25,25 @@ const SHA1 = "http://www.w3.org/2000/09/xmldsig#sha1";
 const SHA256 = "http://www.w3.org/2001/04/xmlenc#sha256";
 const SHA512 = "http://www.w3.org/2001/04/xmlenc#sha512";
 
-// An omitted option (#422) or an unrecognized name such as "SHA256" or "sha-256" (#423) falls back
-// to SHA-1 instead of throwing. Making either an error is breaking, so the rows that use one should
-// change only in a major.
+// An omitted option (#422) still selects SHA-1 and only warns; that warning stays until the next
+// major. An unrecognized name such as "SHA256" or "sha-256" (#423) is now rejected outright, so the
+// fallback cases below assert the rejection rather than the silent SHA-1 downgrade.
 const UNRECOGNIZED = "SHA256" as SignatureAlgorithm;
+const UNRECOGNIZED_DIGEST = "sha-256";
+
+const unrecognizedErrors: Array<{ option: string; value: string; message: string }> = [
+  {
+    option: "signatureAlgorithm",
+    value: UNRECOGNIZED,
+    message:
+      'signatureAlgorithm "SHA256" is not recognized; use one of sha1, sha256, sha256-mgf1, sha512',
+  },
+  {
+    option: "digestAlgorithm",
+    value: UNRECOGNIZED_DIGEST,
+    message: 'digestAlgorithm "sha-256" is not recognized; use one of sha1, sha256, sha512',
+  },
+];
 
 const label = (value: string | undefined) => (value === undefined ? "omitted" : `"${value}"`);
 
@@ -63,23 +78,13 @@ const xmlSigningCases: Array<{
     expected: { signature: RSA_SHA256_MGF1, digest: SHA256 },
   },
   {
-    signatureAlgorithm: UNRECOGNIZED,
-    digestAlgorithm: "sha256",
-    expected: { signature: RSA_SHA1, digest: SHA256 },
-  },
-  {
-    signatureAlgorithm: "sha256",
-    digestAlgorithm: "sha-256",
-    expected: { signature: RSA_SHA256, digest: SHA1 },
-  },
-  {
     signatureAlgorithm: "sha256",
     digestAlgorithm: undefined,
     expected: { signature: RSA_SHA256, digest: SHA1 },
   },
 ];
 
-// "sha256-mgf1" has no caller to break, so it does not get the SHA-1 fallback the rows above pin.
+// "sha256-mgf1" has no caller to break, so an omitted digest is an error rather than a warning.
 const pssDigestErrors: Array<{ digestAlgorithm?: string; message: string }> = [
   {
     digestAlgorithm: undefined,
@@ -119,7 +124,6 @@ describe("Signing algorithms /", function () {
         padding: pss,
       },
       { signatureAlgorithm: "sha512", sigAlg: RSA_SHA512, hash: "sha512" },
-      { signatureAlgorithm: UNRECOGNIZED, sigAlg: RSA_SHA1, hash: "sha1" },
     ];
 
     for (const { signatureAlgorithm, digestAlgorithm, sigAlg, hash, padding } of cases) {
@@ -409,6 +413,61 @@ describe("Signing algorithms /", function () {
     it("digestAlgorithm omitted, and no privateKey to sign with => no error", function () {
       assert.doesNotThrow(
         () => new SAML({ ...config, privateKey: undefined, signatureAlgorithm: "sha256-mgf1" }),
+      );
+    });
+  });
+
+  describe("an unrecognized algorithm name is rejected, not downgraded to SHA-1", function () {
+    const postForm = async (options: {
+      signatureAlgorithm?: SignatureAlgorithm;
+      digestAlgorithm?: string;
+    }) =>
+      await new SAML({
+        ...config,
+        authnRequestBinding: "HTTP-POST",
+        skipRequestCompression: true,
+        ...options,
+      }).getAuthorizeFormAsync("", {});
+
+    const metadata = (options: {
+      signatureAlgorithm?: SignatureAlgorithm;
+      digestAlgorithm?: string;
+    }) =>
+      generateServiceProviderMetadata({
+        issuer: "onesaml_login",
+        callbackUrl: "http://localhost/saml/consume",
+        signMetadata: true,
+        privateKey,
+        publicCerts: publicCert,
+        ...options,
+      });
+
+    for (const { option, value, message } of unrecognizedErrors) {
+      const options = { [option]: value } as {
+        signatureAlgorithm?: SignatureAlgorithm;
+        digestAlgorithm?: string;
+      };
+
+      it(`at construction, ${option} "${value}" throws rather than warning`, function () {
+        assert.throws(() => new SAML({ ...config, ...options }), {
+          name: "TypeError",
+          message,
+        });
+      });
+
+      it(`on an HTTP-POST AuthnRequest, ${option} "${value}" throws before signing`, async function () {
+        await assert.rejects(postForm(options), { name: "TypeError", message });
+      });
+
+      it(`on signed metadata, ${option} "${value}" throws rather than signing`, function () {
+        assert.throws(() => metadata(options), { name: "TypeError", message });
+      });
+    }
+
+    it("an unrecognized name with no privateKey still fails, the option itself is invalid", function () {
+      assert.throws(
+        () => new SAML({ ...config, privateKey: undefined, digestAlgorithm: UNRECOGNIZED_DIGEST }),
+        { name: "TypeError" },
       );
     });
   });
